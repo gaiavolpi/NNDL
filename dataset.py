@@ -4,21 +4,30 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import random
 import torch
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 
 
-def indexing_labels(path_txt_file):
+def indexing_labels(path_txt_file, label_type='model_id'):
     """
     Aim:: map the original labels to new class indices, from 1 to max(nr.models)
     """
     labels=[]
-    
-    with open(path_txt_file, 'r') as f: 
+
+    with open(path_txt_file, 'r') as f:
         for line in f:
-            path = line.strip() 
+            path = line.strip()
             parts = os.path.normpath(path).split(os.sep)
             model_id = parts[-3] #'origina label' is the model id
-            labels.append(int(model_id))
-    
+            make_id = parts[-4] 
+            if label_type == 'model_id':
+              labels.append(int(model_id))
+            elif label_type == 'make_id':
+              labels.append(int(make_id))
+            else:
+              raise Exception('error with label_type argument')
+
+
     unique_labels = sorted(set(labels)) # Map original labels to class indices
     label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
 
@@ -65,3 +74,64 @@ def check_unbalance_dataset(loader, n_indices=3000, title=''):
     plt.xlabel('classes')
     plt.ylabel('counts')
     plt.show()
+
+# This is the class we use to work with samples from the dataset specified in the argument 'path_txt_file'
+# You need to pass to it the label_to_index dictionary so that the labels are converted for each sample in the dataset
+# Optionally, you can select a specific viewpoint for the image of the car (see legend below). If viewpoint is None you load all images
+class ImageDataset(Dataset):
+
+    def __init__(self, dataset_folder, path_txt_file, dict_labels, transform=None, viewpoint=None, label_type='model_id'):
+        '''
+        label_type='model_id', 'make_id'
+        '''
+        self.transform = transform
+        self.image_paths = []
+        self.labels = []
+        self.dict_labels=dict_labels
+
+        # load the paths to the images you need
+        with open(path_txt_file, 'r') as f:
+            for line in f:
+                relative_path = line.strip() # get the paths of the images used in the paper
+
+                if viewpoint: # if we want to train/test on a single viewpoint
+                  label_path = os.path.join(dataset_folder, 'label', relative_path.replace('.jpg', '.txt'))
+                  with open(label_path, 'r') as f:
+                    lines = f.readlines()
+                    vp = int(lines[0].strip())
+
+                  if vp == viewpoint: # use only the images with the desired viewpoint
+                    image_path = os.path.join(dataset_folder, 'image', relative_path)
+                    self.image_paths.append(image_path)
+
+                else: #load all viewpoints
+                  image_path = os.path.join(dataset_folder, 'image', relative_path)
+                  self.image_paths.append(image_path)
+
+        # Extract label model_id from path
+        for path in self.image_paths:
+            parts = os.path.normpath(path).split(os.sep)
+            model_id = parts[-3]
+            make_id = parts[-4]
+            if label_type == 'model_id':
+              self.labels.append(model_id)
+            elif  label_type == 'make_id':
+              self.labels.append(make_id)
+            else:
+              raise Exception('error with label_type argument')
+            '''
+            # run this if you instead want the set of three labels (make_id, model_id, year)
+            year = parts[-2]
+            self.labels.append((make_id, model_id, year))
+            '''
+            
+    def __len__(self):
+        return len(self.image_paths)
+
+    def __getitem__(self, idx):
+        img_path = self.image_paths[idx]
+        image = Image.open(img_path).convert("RGB")
+        label = self.dict_labels[int(self.labels[idx])] #labelling the image, converting the original label to index through the dictionary
+        if self.transform:
+            image = self.transform(image)
+        return image, label
