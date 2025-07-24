@@ -3,15 +3,15 @@ from torch.nn import Module, Sequential, Conv2d, BatchNorm2d
 from torch.nn import SiLU as ReLU
 from torch.optim import SGD, Adam
 import torch
-from torch.nn import MaxPool2d, AvgPool2d, Linear, Dropout
+from torch.nn import MaxPool2d, AvgPool2d, Linear, Dropout, Dropout2d
 from torch.nn import AdaptiveAvgPool2d
 
 class BasicBlock(Module):
     def __init__(self, in_channels, out_channels, stride=1):
-        
         # structure of a single block 
         super(BasicBlock, self).__init__()
         self.conv1 = Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False) 
+        self.drop = Dropout2d(0.2)
         self.bn1 = BatchNorm2d(out_channels)
         self.relu = ReLU(inplace=True)
         self.conv2 = Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
@@ -26,6 +26,7 @@ class BasicBlock(Module):
             
     def forward(self, x):
         out = self.conv1(x)
+        out = self.drop(out)
         out = self.bn1(out)
         out = self.relu(out)
         out = self.conv2(out)
@@ -36,7 +37,7 @@ class BasicBlock(Module):
 
 class ResNet18(Module):
     def __init__(self, num_classes=431):
-        super(ResNet18, self).__init__()
+        super().__init__()
         # initial stage
         self.in_channels = 64
         self.conv1 = Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)

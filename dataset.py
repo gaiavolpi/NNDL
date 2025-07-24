@@ -8,10 +8,10 @@ from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 
 
-def indexing_labels(path_txt_file, label_type='model_id'):
-    """
-    Aim:: map the original labels to new class indices, from 1 to max(nr.models)
-    """
+def indexing_labels(path_txt_file, label_type='model_id'): 
+    '''
+    This function reads a text file containing paths to images and extracts labels based on the specified label_type.
+    It returns a dictionary mapping original labels to class indices for training.'''
     labels=[]
 
     with open(path_txt_file, 'r') as f:
@@ -27,7 +27,6 @@ def indexing_labels(path_txt_file, label_type='model_id'):
             else:
               raise Exception('error with label_type argument')
 
-
     unique_labels = sorted(set(labels)) # Map original labels to class indices
     label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
 
@@ -35,7 +34,7 @@ def indexing_labels(path_txt_file, label_type='model_id'):
 
 def split_valid_test():
     '''
-    Aim: splitting the test set used in the paper in a 50-50 validation and test sets
+    This function splits the test set into a new validation set and a new test set.
     '''
     general_paths = []
     with open('./data/train_test_split/classification/test.txt', 'r') as f: #opens the test txt and store alle the paths to the images
@@ -56,16 +55,16 @@ def split_valid_test():
             f.write(path + '\n')
 
 def check_unbalance_dataset(loader, n_indices=3000, title=''):
-    # Check unbalance in the dataset
+    '''
+    This function checks the unbalance in the dataset by plotting a histogram of the class distribution.
+    '''
     labels_array = []
-    
     for batch in loader:
         _, labels = batch  # batch[1] is the labels
         labels_array.append(labels)
     
     # Concatenate into a single tensor or list
     labels_array = torch.cat(labels_array).numpy().astype(int)  # or .tolist() if you want a Python list
-    
     labels_array_sorted = np.sort(labels_array)
     
     plt.hist(labels_array_sorted[:n_indices], bins=np.arange(min(labels_array_sorted[:n_indices]),max(labels_array_sorted[:n_indices])), edgecolor='black')
@@ -75,9 +74,20 @@ def check_unbalance_dataset(loader, n_indices=3000, title=''):
     plt.ylabel('counts')
     plt.show()
 
-# This is the class we use to work with samples from the dataset specified in the argument 'path_txt_file'
-# You need to pass to it the label_to_index dictionary so that the labels are converted for each sample in the dataset
-# Optionally, you can select a specific viewpoint for the image of the car (see legend below). If viewpoint is None you load all images
+def dataset_factory(volume_dir, label_to_index, transforms_train, transforms):
+    '''
+    This function creates a dataset factory that generates train, test, and validation datasets based on the specified viewpoint.
+    It returns a function that can be called with a specific viewpoint to generate the datasets.
+    '''
+    def generate(viewpoint):
+        train_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/train.txt", label_to_index, transforms_train, viewpoint)
+        test_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/test_updated.txt", label_to_index, transforms, viewpoint)
+        valid_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/valid.txt", label_to_index, transforms, viewpoint)
+        return train_dataset, test_dataset, valid_dataset
+    return generate
+# Ti chiederai perchè serve questa? Così non devi duplicare il codice ogni volta che devi generare dataset per un diverso viewpoint. 
+# In più, se cambia qualcosa devi solo aggiornare la factory!
+
 class ImageDataset(Dataset):
 
     def __init__(self, dataset_folder, path_txt_file, dict_labels, transform=None, viewpoint=None, label_type='model_id'):
@@ -88,6 +98,7 @@ class ImageDataset(Dataset):
         self.image_paths = []
         self.labels = []
         self.dict_labels=dict_labels
+
 
         # load the paths to the images you need
         with open(path_txt_file, 'r') as f:

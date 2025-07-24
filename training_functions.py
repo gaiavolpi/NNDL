@@ -11,13 +11,16 @@ from sklearn.utils.class_weight import compute_class_weight
 
 from ResNet50_blocks import ResNet50
 from utils import ImageDataset
-from dataset import indexing_labels
-
+from sklearn.utils.class_weight import compute_class_weight
+from dataset import *
 
 class FocalLoss(Module):
+    '''
+    This functionn implements the focal Loss for multi-class classification.
+    '''
     def __init__(self, alpha=1, gamma=2):
         super(FocalLoss, self).__init__()
-        self.alpha = alpha
+        self.alpha = alpha # weights for each class
         self.gamma = gamma
 
     def forward(self, inputs, targets):
@@ -25,10 +28,6 @@ class FocalLoss(Module):
         pt = torch.exp(-BCE_loss)
         focal_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
         return focal_loss
-
-# We define the transformations to be applied to our datasets
-# Orignial images have different shapes, we resize them to square images.
-# For the training we rotate some of the images randomly to make the learning more robust
 
 transforms_train = Compose([
     Resize((224, 224)), 
@@ -43,41 +42,75 @@ transforms = Compose([
     ToTensor()
 ])
 
-
-def network_training(class_weights, train_dataloader, valid_dataloader, model=ResNet50(), opt=Adam, loss_fn=CrossEntropyLoss(), epochs=30, pretrained=None, volume_dir='/mnt/shared_volume/'):
+def load_pretrain(volume_dir, device, model, opt=None, vp=0):
     '''
-    viewpoint=0: all images
+    Load a pre-trained model and optimizer state from the specified volume directory.
     '''
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("device: ", device)
-    
-    opt = opt(model.parameters(), lr=1e-3, weight_decay = 0.00005)
-    
-    if loss_fn == CrossEntropyLoss():
-        loss_fn = loss_fn(weight=torch.tensor(class_weights, dtype=torch.float32).to(device))
+    vp = vp or '0' # if vp is None, we assume it is '0' 
+    net_state_dict = torch.load(volume_dir+str(vp)+'/model.pt', map_location=device) # load the model state dict
+    model.load_state_dict(net_state_dict)
 
-    elif loss_fn == FocalLoss():
-        loss_fn = loss_fn(alpha=torch.tensor(class_weights, dtype=torch.float32).to(device), gamma=torch.tensor(2).to(device))
-
-    if pretrained:
-        net_state_dict = torch.load(volume_dir+'model.pt', map_location=device)
-        model.load_state_dict(net_state_dict)
-        
-        opt_state_dict = torch.load(volume_dir+'optimizer_state.torch', map_location=device)
+    if opt is not None: # if an optimizer is provided, load its state dict (questo serve soolo quando facciamo il training)
+        opt_state_dict = torch.load(volume_dir+str(vp)+'/optimizer_state.torch', map_location=device)
         opt.load_state_dict(opt_state_dict)
-        for state in opt.state.values():
+        for state in opt.state.values(): # queso è per spostare lo stato dell'ottimizzatore sul device giusto altrimenti non funziona
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
                     state[k] = v.to(device)
-    
-        best_val = np.loadtxt(volume_dir+'best_val.txt')
-        train_loss_log_previous = np.loadtxt(volume_dir+'train_loss_log.txt').tolist()
-        val_loss_log_previous = np.loadtxt(volume_dir+'val_loss_log.txt').tolist()
 
+    best_val = np.loadtxt(volume_dir+str(vp)+'/best_val.txt')
+    train_loss_log_previous = np.loadtxt(volume_dir+str(vp)+'/train_loss_log.txt').tolist()
+    val_loss_log_previous = np.loadtxt(volume_dir+str(vp)+'/val_loss_log.txt').tolist()
+
+    return model, opt, best_val, train_loss_log_previous, val_loss_log_previous
+
+def fix_losses(class_weights, loss_fn, device):
+    '''
+    This function fixes the loss function to be used in the training.
+    '''
+    if loss_fn == CrossEntropyLoss:
+        loss_fn = loss_fn(weight=torch.tensor(class_weights, dtype=torch.float32).to(device))
+
+    elif loss_fn == FocalLoss:
+        loss_fn = loss_fn(alpha=torch.tensor(class_weights, dtype=torch.float32).to(device), gamma=torch.tensor(2).to(device))
     else:
-        best_val = np.inf # threshold for validation loss to choose if to save models parameters
-        train_loss_log_previous =[]
-        val_loss_log_previous = []
+        raise NotImplementedError("Loss function not implemented. Use CrossEntropyLoss or FocalLoss.")
+    return loss_fn
+
+def load_checkpoint(load, model, opt, device, volume_dir):
+    '''
+    This function returns a function that loads a pre-trained model and optimizer state from the specified volume
+        directory if load is True, otherwise it initializes them. 
+    '''
+    def load_():
+        return load_pretrain(volume_dir, device, model, opt) if load else (model, opt, np.inf, [], [])
+    return load_
+# Roba complessa, ma elegante! Utile da imparare. 
+# Perchè è utile? Il fatto è che stai creando una funzione `load_()` che non richiede di passare i parametri ogni volta che vuoi caricare il modello e l'ottimizzatore.
+# Sempre questione di non fare codici con funzioni con mille parametri.
+
+def save_checkpoint(model, opt, vp, volume_dir):
+    '''
+    This function saves the model and optimizer state to the specified volume directory.
+    '''
+    torch.save(model.state_dict(), volume_dir+str(vp)+"/model.pt")  
+    torch.save(opt.state_dict(), volume_dir+str(vp)+'/optimizer_state.torch')
+    print("Model and optimizer state saved.")
+
+def store_metric(volume_dir): # volume_dir definito fuori 
+    '''
+    This function returns a function that saves the metric values to the specified volume directory.
+    '''
+    def save_(metric, values, vp): # questi argomenti sono passati da network_training
+        np.savetxt(volume_dir+str(vp or "0")+"/"+metric, values)
+    return save_
+# Carino perchè puoi cambiare la metrica se vuoi, per ora noi usiamo la loss ma magari vogliamo salvare anche l'accuratezza o altre metriche in futuro.
+
+def network_training(train_dataloader, valid_dataloader, load_checkpoint, loss_fn, device, save_checkpoint, save_metric, epochs=30):
+    '''
+    This function trains the model on the training dataset and evaluates it on the validation dataset.
+    '''
+    model, opt, best_val, train_loss_log_previous, val_loss_log_previous = load_checkpoint() # load the model and optimizer state if load_checkpoint is True
     
     train_loss_log = []
     val_loss_log = []
@@ -91,6 +124,7 @@ def network_training(class_weights, train_dataloader, valid_dataloader, model=Re
         model.train()
         train_loss= [] 
         iterator = tqdm(train_dataloader) 
+        accuracies = []
         for batch_x, batch_y in iterator:
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
@@ -106,10 +140,15 @@ def network_training(class_weights, train_dataloader, valid_dataloader, model=Re
             
             loss_batch = loss.detach().cpu().numpy()
             train_loss.append(loss_batch)
+
+            accuracies.append(
+                ((y_pred.argmax(dim=1) == batch_y).float().mean()*100).detach().cpu().numpy() # compute accuracy for this batch
+            )
             
-            iterator.set_description(f"Train loss: {loss_batch:.4f} - Acc: {((y_pred.argmax(dim=1) == batch_y).float().mean()*100):.1f}")
+            iterator.set_description(f"Train loss: {loss_batch:.4f} - Acc: {np.mean(accuracies):.1f}")
+
         # store average loss for this epoch
-        train_loss = np.mean(train_loss) #mean over all batches
+        train_loss = np.mean(train_loss)
         train_loss_log.append(train_loss)
 
         ### EVALUATION ON VALIDATION SET ###
@@ -142,137 +181,94 @@ def network_training(class_weights, train_dataloader, valid_dataloader, model=Re
             print(f"loss: {val_loss}, accuracy: {val_acc}")
     
         if val_loss < best_val:
-                print("Saved Model")
-                torch.save(model.state_dict(), volume_dir+"model.pt") #saves model learned parameters in /mnt/shared_volume
-                torch.save(opt.state_dict(), volume_dir+'optimizer_state.torch') #saves optimizer state in /mnt/shared_volume
+                save_checkpoint(model, opt) # save the model and optimizer state
                 best_val = val_loss
                 best_epoch = epoch 
 
     val_loss_log_previous.extend(val_loss_log[:best_epoch+1])
     train_loss_log_previous.extend(train_loss_log[:best_epoch+1])
-    np.savetxt(volume_dir+'val_loss_log.txt', val_loss_log_previous)
-    np.savetxt(volume_dir+'train_loss_log.txt', train_loss_log_previous)
-    np.savetxt(volume_dir+'best_val.txt', [best_val])
-    
-    #return
-    return  model, train_loss_log, val_loss_log
+    save_metric('val_loss_log.txt', val_loss_log_previous) # save the loss log
+    save_metric('train_loss_log.txt', train_loss_log_previous)
+    save_metric('best_val.txt', [best_val])
 
+    return train_loss_log, val_loss_log
 
+def evaluate_network(dataloader, model, k_indices:list, device):
+    '''
+    This function evaluates the model on the test dataset and computes the top-k accuracy.
+    '''
+    assert isinstance(k_indices, list), "k_indices should be a list of integers" # imposes that k_indices is a list, super figa questa cosa non la sapevo!
 
-def evaluate_network(dataloader, model, kk, dataset_name):
-    """
-    dataloader: the  dataloader class associated to a specific dataset
-    model: the network to use to compute predictions
-    dataset_name: string, maybe useless
-    kk: int or list, the k for the top-k classes
-
-    Return the top-k accuracy (percentage)
-    Note: if a list is passed for kk, then the output is a list with the corresponding top  k accuracies
-    """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     model.eval()
     with torch.no_grad():
         predictions = []
-        true = []
-        i=0
+        true_labels = []
         for batch_x, batch_y in tqdm(dataloader):
             batch_x = batch_x.to(device)
             batch_y = batch_y.to(device)
     
             y_pred = model(batch_x)
             predictions.append(y_pred)
-            true.append(batch_y)
+            true_labels.append(batch_y)
         predictions = torch.cat(predictions, axis=0)
-        true = torch.cat(true, axis=0)
-        
-        if isinstance(kk, int) or isinstance(kk, float): #check if kk argument is int or float. If so, convert to single entry list (needed to the for cycle)
-            kk = [kk]
-        print(dataset_name, "results:")
-        topk_accuracies = {}
-        for k_classes in kk:
-            ### Calcolo errore top-k  
-            predictions_after_activation = torch.nn.functional.softmax(predictions, dim=1)
-            topk_predictions = torch.topk(predictions_after_activation, k_classes)[1] #2d tensor containg one array for each sample, with the top k predicted labels 
-            
-            true_expanded = true.unsqueeze(1) #now is a 2d tensor with 1d arrays as entries
-    
-            
-            matches = (topk_predictions == true_expanded) # 2d tensor whose entries are arrays of boolean values: true if the entry is equal to the true label
-            result = matches.any(dim=1) #1d array: it makes the boolean arrays collapse: become True if at least 1 true entry was there, else False
-            
-            topk_accuracy  = result.sum()/result.shape[0] #nr of times the true label was in the top k classes / number of samples considered
-            topk_accuracy = topk_accuracy.detach().cpu().numpy()
+        true_labels = torch.cat(true_labels, axis=0)
+    probs = torch.nn.functional.softmax(predictions, dim=1)
 
-            #print and store
-            print(f"\ttop-{k_classes} accuracy", np.round(topk_accuracy,3))      
-            topk_accuracies[k_classes] = topk_accuracy
-        
-    return topk_accuracies 
+    topk_score = {}
+    for k in k_indices:
+        topk_preds = torch.topk(probs, k, dim=1).indices #2d tensor containg one array for each sample, with the top k predicted labels 
+        correct = topk_preds.eq(true_labels.unsqueeze(1)).any(dim=1) # 2d tensor whose entries are arrays of boolean values: true if the entry is equal to the true label
+        score = correct.float().mean().item()
+        print(f"\ttop-{k} score: {score:.3f}")
+        topk_score[k] = score
 
+    return topk_score
 
+def calcul_class_weights(train_dataloader):
+    '''
+    This function computes the class weights for the training dataset.
+    '''
+    labels_array = []
+    for batch in train_dataloader:
+        _, labels = batch
+        labels_array.append(labels)
+    labels_array = torch.cat(labels_array).numpy().astype(int)
+    return compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
 
-
-
-def multi_viewpoint_training(epochs_model_vp, model=ResNet50(), chosen_viewpoints=None, k_list=[1,5], volume_dir='/mnt/shared_volume/'):
-    """
+def multi_viewpoint_training(viewpoints, epochs, make_dataset, load_checkpoint, loss_fn, device, save_checkpoint, save_metric, model_class, load_pretrain, k_list=[1,5]):
+    '''
     This function performs sequentially a training of a fixed number of epochs on different datasets. The different datasets contains different
-    viewpoints of the cars. It saves the trained model for each dataset.
+    viewpoints of the cars. It saves the model, optimizer and losses for each dataset.'''
+    metrics = {}
+    for vp in viewpoints:
+        train_dataset, test_dataset, valid_dataset = make_dataset(vp)
+        batch_size = 64
+        train_dataloader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=os.cpu_count())
+        valid_dataloader = DataLoader(valid_dataset, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
+        test_dataloader = DataLoader(test_dataset, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
+        model = model_class() # per rinizializzare il modello ad ogni iterazione altrimenti buuuuu
 
-    Possible update: train till convergence
-    Possible update: start from pretrained model
-    viewpoint:
-    -1 - uncertain
-    1 - front
-    2 - rear
-    3 - side
-    4 - front-side
-    5 - rear-side
-    """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    vp_to_name = {1: 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side', None: 'all-view'}
-    label_to_index = indexing_labels(volume_dir + "data/train_test_split/classification/train.txt", label_type='model_id')
-
-    if chosen_viewpoints is None: #here you go sequentially for all viewpoints datasets available
-        viewpoints_considered = [None, 1,2,3,4,5]
-    elif chosen_viewpoints is not None: #here you go sequentially on the specific viewpoints datasets provided as arg 
-        viewpoints_considered = chosen_viewpoints
-    
-    for vp in viewpoints_considered:
-      # LOAD DATASET
-      train_dataset =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/train.txt", label_to_index, transforms_train, viewpoint=vp)
-      test_dataset =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/test_updated.txt", label_to_index, transforms, viewpoint=vp)
-      valid_dataset =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/valid.txt", label_to_index, transforms, viewpoint=vp)
-      print(f"len viewpoint {vp}({vp_to_name[vp]}) dataset:\n \ttrain: {len(train_dataset)}, valid: {len(valid_dataset)}, test: {len(test_dataset)}")
-      # Here we use the Dataloader function from pytorch to opportunely split the dataset in batches and shuffling data
-      batch_size = 64
-      train_dataloader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=os.cpu_count())
-      valid_dataloader = DataLoader(valid_dataset, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
-      test_dataloader = DataLoader(test_dataset, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
+        class_weight = calcul_class_weights(train_dataloader)
+        network_training(
+            train_dataloader, 
+            valid_dataloader, 
+            load_checkpoint, 
+            loss_fn(class_weight), 
+            device, 
+            lambda model, opt: save_checkpoint(model, opt, vp),
+            lambda metric, values: save_metric(metric, values, vp), 
+            epochs
+        )
         
-      #class weights
-      labels_array = []
-      for batch in train_dataloader:
-            _, labels = batch
-            labels_array.append(labels)
-      labels_array = torch.cat(labels_array).numpy().astype(int)
-      class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
-              
-      # TRAIN NETWORK AND SAVE PARAMETERS
-      model,_,_=network_training(class_weights, train_dataloader, valid_dataloader, model, epochs=epochs_model_vp)
+        model, *_ = load_pretrain(device, model, vp=0)
+        topk_score = evaluate_network(test_dataloader, model, k_list, device)
+        metrics[vp] = topk_score
+    return metrics
 
-      # EVALUATE NETWORK
-      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint {vp}({vp_to_name[vp]})")
-      if vp is None: vp=0 #change for file naming reason
-      np.savetxt(volume_dir+f'table3/topk_accuracies_vp{vp}.txt', np.array(list(topk_accuracy_test.items()))[:,1])   
-      print()
-
-
-
-
-
-
+'''
 def make_training(epochs_make=30, model=ResNet50(), chosen_viewpoints=None, k_list=[1], volume_dir='/mnt/shared_volume/'):
+>>>>>>> 1f380e7 (fixed code, still a bug tough)
     """
     This function performs sequentially a training of a fixed number of epochs on different datasets. The different datasets contains different
     viewpoints of the cars. It saves the trained model for each dataset.
@@ -326,3 +322,4 @@ def make_training(epochs_make=30, model=ResNet50(), chosen_viewpoints=None, k_li
       if vp is None: vp=0 #change for file naming reasons
       np.savetxt(volume_dir+f'table3/accuracy_vp{vp}_make.txt', np.array(list(topk_accuracy_test.items()))[:,1])  
       print()
+      '''
