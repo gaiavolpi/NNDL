@@ -38,32 +38,63 @@ def exponential_moving_average(log_loss, beta=0.2):
         moving_averages.append(mu)
     return moving_averages
 
+def debug(text, var, debug_mode=True):
+    """
+    text: the text that preceed the debug message
+    var: list of variables whose values are to be displayed
+    """
+    if debug_mode:
+        print("Debug: ", text, var)
 
-
-def table3(folder_path='table3/'):
-    vp_to_name = {1 : 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side'}
+def table3(folder_path='/mnt/shared_volume/table3/'):
+    vp_to_name = {1: 'front', 2: 'rear', 3: 'side', 4: 'front-side', 5: 'rear-side'}
 
     folder = Path(folder_path)
-    pattern = re.compile(r"topk_accuracies_vp(\d+)")
-    
-    data = []
+
+    topk_pattern = re.compile(r"topk_accuracies_vp(\d+)")
+    make_pattern = re.compile(r"accuracy_vp(\d+)")
+
+    topk_data = {}
+    make_data = {}
 
     for file in folder.iterdir():
-        if file.is_file() and file.name.startswith("topk_accuracies_vp"):
-            match = pattern.search(file.stem)
-            if match:
-                vp = int(match.group(1))
-                try:
-                    values = np.loadtxt(file)
-                    if len(values) == 2:
-                        top1, top5 = values
-                        data.append({'viewpoint': vp_to_name[vp], 'top1': top1, 'top5': top5})
-                    else:
-                        print(f"⚠️ File {file.name} does not contain exactly 2 values.")
-                except Exception as e:
-                    print(f"❌ Error reading {file.name}: {e}")
-    
-    df = pd.DataFrame(data)
-    df = df.sort_values(by='viewpoint').reset_index(drop=True)
-    print(df)
+        if not file.is_file():
+            continue
+
+        # Top-1 and Top-5
+        topk_match = topk_pattern.search(file.stem)
+        if topk_match:
+            vp = int(topk_match.group(1))
+            try:
+                values = np.loadtxt(file)
+                if len(values) == 2:
+                    top1, top5 = values
+                    topk_data[vp] = {'top1': top1, 'top5': top5}
+                else:
+                    print(f"⚠️ File {file.name} does not contain exactly 2 values.")
+            except Exception as e:
+                print(f"❌ Error reading {file.name}: {e}")
+
+        # Make accuracy
+        make_match = make_pattern.search(file.stem)
+        if make_match:
+            vp = int(make_match.group(1))
+            try:
+                value = float(np.loadtxt(file))
+                make_data[vp] = value
+            except Exception as e:
+                print(f"❌ Error reading {file.name}: {e}")
+
+    # Merge data
+    data = []
+    for vp in sorted(vp_to_name.keys()):
+        row = {
+            'viewpoint': vp_to_name[vp],
+            'top1': topk_data.get(vp, {}).get('top1', None),
+            'top5': topk_data.get(vp, {}).get('top5', None),
+            'make': make_data.get(vp, None)
+        }
+        data.append(row)
+
+    df = pd.DataFrame(data).set_index(keys='viewpoint')
     return df

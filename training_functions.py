@@ -7,6 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 import os
 from torch.nn import Module, Sequential, Conv2d, BatchNorm2d
 from torchvision.transforms import Compose, ToTensor, RandomAffine, RandomHorizontalFlip, RandomVerticalFlip, ColorJitter, Resize
+from sklearn.utils.class_weight import compute_class_weight
 
 from ResNet50_blocks import ResNet50
 from utils import ImageDataset
@@ -158,6 +159,8 @@ def network_training(class_weights, train_dataloader, valid_dataloader, model=Re
     else: return train_loss_log, val_loss_log
 
 
+
+
 def evaluate_network(dataloader, model, kk, dataset_name):
     """
     dataloader: the  dataloader class associated to a specific dataset
@@ -209,7 +212,11 @@ def evaluate_network(dataloader, model, kk, dataset_name):
         
     return topk_accuracies 
 
-def multi_viewpoint_training(class_weights, model=ResNet50(), chosen_viewpoints=None, k_list=[1,5], volume_dir='/mnt/shared_volume/'):
+
+
+
+
+def multi_viewpoint_training(epochs_model_vp, model=ResNet50(), chosen_viewpoints=None, k_list=[1,5], volume_dir='/mnt/shared_volume/'):
     """
     This function performs sequentially a training of a fixed number of epochs on different datasets. The different datasets contains different
     viewpoints of the cars. It saves the trained model for each dataset.
@@ -226,7 +233,7 @@ def multi_viewpoint_training(class_weights, model=ResNet50(), chosen_viewpoints=
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     vp_to_name = {1: 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side', None: 'all'}
-    label_to_index = indexing_labels(volume_dir + "data/train_test_split/classification/train.txt")
+    label_to_index = indexing_labels(volume_dir + "data/train_test_split/classification/train.txt", label_type='model_id')
 
     if chosen_viewpoints is None: #here you go sequentially for all viewpoints datasets available
         viewpoints_considered = [1,2,3,4,5]
@@ -235,7 +242,6 @@ def multi_viewpoint_training(class_weights, model=ResNet50(), chosen_viewpoints=
     
     for vp in viewpoints_considered:
       # LOAD DATASET
-
       train_dataset =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/train.txt", label_to_index, transforms_train, viewpoint=vp)
       test_dataset =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/test_updated.txt", label_to_index, transforms, viewpoint=vp)
       valid_dataset =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/valid.txt", label_to_index, transforms, viewpoint=vp)
@@ -245,16 +251,29 @@ def multi_viewpoint_training(class_weights, model=ResNet50(), chosen_viewpoints=
       train_dataloader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=os.cpu_count())
       valid_dataloader = DataLoader(valid_dataset, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
       test_dataloader = DataLoader(test_dataset, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
-      
+        
+      #class weights
+      labels_array = []
+      for batch in train_dataloader:
+            _, labels = batch
+            labels_array.append(labels)
+      labels_array = torch.cat(labels_array).numpy().astype(int)
+      class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
+              
       # TRAIN NETWORK AND SAVE PARAMETERS
-      model=network_training(class_weights, train_dataloader, valid_dataloader, model, viewpoint=vp)
+      model=network_training(class_weights, train_dataloader, valid_dataloader, model, viewpoint=vp, epochs=epochs_model_vp)
 
       # EVALUATE NETWORK
       topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint{vp}")
-      np.savetxt(volume_dir+f'table3/topk_accuracies_vp{vp}.txt', np.array(topk_accuracy_test))   
+      np.savetxt(volume_dir+f'table3/topk_accuracies_vp{vp}.txt', np.array(list(topk_accuracy_test.items()))[:,1])   
+      print()
 
 
-def make_training(model=ResNet50(), chosen_viewpoints=None, k_list=[1,5], volume_dir='/mnt/shared_volume/'):
+
+
+
+
+def make_training(epochs_make=30, model=ResNet50(), chosen_viewpoints=None, k_list=[1], volume_dir='/mnt/shared_volume/'):
     """
     This function performs sequentially a training of a fixed number of epochs on different datasets. The different datasets contains different
     viewpoints of the cars. It saves the trained model for each dataset.
@@ -289,9 +308,19 @@ def make_training(model=ResNet50(), chosen_viewpoints=None, k_list=[1,5], volume
       train_dataloader = DataLoader(train_dataset_make, batch_size, shuffle=True, num_workers=os.cpu_count())
       valid_dataloader = DataLoader(test_dataset_make, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
       test_dataloader = DataLoader(valid_dataset_make, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
+
+      #class weights
+      labels_array = []
+      for batch in train_dataloader:
+            _, labels = batch
+            labels_array.append(labels)
+      labels_array = torch.cat(labels_array).numpy().astype(int)
+      class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
+        
       # TRAIN NETWORK AND SAVE PARAMETERS
-      model=network_training(model, viewpoint=vp)
+      model=network_training(class_weights, train_dataloader, valid_dataloader, model, viewpoint=vp, epochs=epochs_make)
 
       # EVALUATE NETWORK
-      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint{vp}")
-      np.savetxt(volume_dir+f'table3/topk_accuracies_vp{vp}_make.txt', np.array(topk_accuracy_test))   
+      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint{vp}") #top-1 accuracy is the accuracy, right? CONTROLLA
+      np.savetxt(volume_dir+f'table3/accuracy_vp{vp}_make.txt', np.array(list(topk_accuracy_test.items()))[:,1])  
+      print()
