@@ -47,7 +47,7 @@ def debug(text, var, debug_mode=True):
         print("Debug: ", text, var)
 
 def table3(folder_path='/mnt/shared_volume/table3/'):
-    vp_to_name = {1: 'front', 2: 'rear', 3: 'side', 4: 'front-side', 5: 'rear-side'}
+    vp_to_name = {0: 'all-view', 1: 'front', 2: 'rear', 3: 'side', 4: 'front-side', 5: 'rear-side'}
 
     folder = Path(folder_path)
 
@@ -97,4 +97,5 @@ def table3(folder_path='/mnt/shared_volume/table3/'):
         data.append(row)
 
     df = pd.DataFrame(data).set_index(keys='viewpoint')
+    df=df.round(3)
     return df

@@ -44,7 +44,7 @@ transforms = Compose([
 ])
 
 
-def network_training(class_weights, train_dataloader, valid_dataloader, model=ResNet50(), opt=Adam, loss_fn=CrossEntropyLoss(), epochs=30, pretrained=None, viewpoint=0, volume_dir='/mnt/shared_volume/'):
+def network_training(class_weights, train_dataloader, valid_dataloader, model=ResNet50(), opt=Adam, loss_fn=CrossEntropyLoss(), epochs=30, pretrained=None, volume_dir='/mnt/shared_volume/'):
     '''
     viewpoint=0: all images
     '''
@@ -155,9 +155,7 @@ def network_training(class_weights, train_dataloader, valid_dataloader, model=Re
     np.savetxt(volume_dir+'best_val.txt', [best_val])
     
     #return
-    if viewpoint != 0:  return  model
-    else: return train_loss_log, val_loss_log
-
+    return  model, train_loss_log, val_loss_log
 
 
 
@@ -232,11 +230,11 @@ def multi_viewpoint_training(epochs_model_vp, model=ResNet50(), chosen_viewpoint
     5 - rear-side
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    vp_to_name = {1: 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side', None: 'all'}
+    vp_to_name = {1: 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side', None: 'all-view'}
     label_to_index = indexing_labels(volume_dir + "data/train_test_split/classification/train.txt", label_type='model_id')
 
     if chosen_viewpoints is None: #here you go sequentially for all viewpoints datasets available
-        viewpoints_considered = [1,2,3,4,5]
+        viewpoints_considered = [None, 1,2,3,4,5]
     elif chosen_viewpoints is not None: #here you go sequentially on the specific viewpoints datasets provided as arg 
         viewpoints_considered = chosen_viewpoints
     
@@ -261,10 +259,11 @@ def multi_viewpoint_training(epochs_model_vp, model=ResNet50(), chosen_viewpoint
       class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
               
       # TRAIN NETWORK AND SAVE PARAMETERS
-      model=network_training(class_weights, train_dataloader, valid_dataloader, model, viewpoint=vp, epochs=epochs_model_vp)
+      model,_,_=network_training(class_weights, train_dataloader, valid_dataloader, model, epochs=epochs_model_vp)
 
       # EVALUATE NETWORK
-      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint{vp}")
+      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint {vp}({vp_to_name[vp]})")
+      if vp is None: vp=0 #change for file naming reason
       np.savetxt(volume_dir+f'table3/topk_accuracies_vp{vp}.txt', np.array(list(topk_accuracy_test.items()))[:,1])   
       print()
 
@@ -287,13 +286,15 @@ def make_training(epochs_make=30, model=ResNet50(), chosen_viewpoints=None, k_li
     3 - side
     4 - front-side
     5 - rear-side
+
+    Note: here vp=0 stands for all vievpoints
     """
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    vp_to_name = {1 : 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side'}
+    vp_to_name = {1 : 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side', None: 'all-view'}
     label_to_index_make = indexing_labels(volume_dir + "data/train_test_split/classification/train.txt", label_type='make_id')
 
     if chosen_viewpoints is None: #here you go sequentially for all viewpoints datasets available
-        viewpoints_considered = [1,2,3,4,5]
+        viewpoints_considered = [None, 1,2,3,4,5]
     elif chosen_viewpoints is not None: #here you go sequentially on the specific viewpoints datasets provided as arg 
         viewpoints_considered = chosen_viewpoints
     
@@ -318,9 +319,10 @@ def make_training(epochs_make=30, model=ResNet50(), chosen_viewpoints=None, k_li
       class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
         
       # TRAIN NETWORK AND SAVE PARAMETERS
-      model=network_training(class_weights, train_dataloader, valid_dataloader, model, viewpoint=vp, epochs=epochs_make)
+      model, _, _=network_training(class_weights, train_dataloader, valid_dataloader, model, epochs=epochs_make)
 
       # EVALUATE NETWORK
-      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint{vp}") #top-1 accuracy is the accuracy, right? CONTROLLA
+      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint {vp}({vp_to_name[vp]})") #top-1 accuracy is the accuracy, right? CONTROLLA
+      if vp is None: vp=0 #change for file naming reasons
       np.savetxt(volume_dir+f'table3/accuracy_vp{vp}_make.txt', np.array(list(topk_accuracy_test.items()))[:,1])  
       print()
