@@ -6,6 +6,7 @@ import random
 import torch
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
+from collections import defaultdict
 
 
 def indexing_labels(path_txt_file, label_type='model_id'): 
@@ -32,25 +33,36 @@ def indexing_labels(path_txt_file, label_type='model_id'):
 
     return label_to_index
 
-def split_valid_test():
+def split_valid_test(volume_dir):
     '''
-    This function splits the test set into a new validation set and a new test set.
+    This function splits the test set into a new validation set and a new test set,
+    ensuring an even class-wise distribution.
     '''
-    general_paths = []
-    with open('./data/train_test_split/classification/test.txt', 'r') as f: #opens the test txt and store alle the paths to the images
+    label_to_paths = defaultdict(list)
+
+    # Read all test paths and group by class
+    with open(volume_dir+'data/train_test_split/classification/test.txt', 'r') as f:
         for line in f:
             path = line.strip()
-            general_paths.append(path)
-    valid_paths = general_paths[:int(len(general_paths)*0.5)] #store half paths for the new test set and the other half for the new valid set
-    test_paths = general_paths[int(len(general_paths)*0.5):]
+            parts = os.path.normpath(path).split(os.sep)
+            label = parts[-3]
+            label_to_paths[label].append(path)
 
-    # Write to valid.txt
-    with open('./data/train_test_split/classification/valid.txt', 'w') as f:
+    valid_paths, test_paths = [], []
+
+    # For each class, split 50/50
+    for paths in label_to_paths.values():
+        mid = len(paths) // 2
+        valid_paths.extend(paths[:mid])
+        test_paths.extend(paths[mid:])
+
+    # Save valid.txt
+    with open(volume_dir+'data/train_test_split/classification/valid.txt', 'w') as f:
         for path in valid_paths:
             f.write(path + '\n')
 
-    # Write to test_updated.txt
-    with open('./data/train_test_split/classification/test_updated.txt', 'w') as f:
+    # Save test_updated.txt
+    with open(volume_dir+'data/train_test_split/classification/test_updated.txt', 'w') as f:
         for path in test_paths:
             f.write(path + '\n')
 
@@ -74,15 +86,17 @@ def check_unbalance_dataset(loader, n_indices=3000, title=''):
     plt.ylabel('counts')
     plt.show()
 
-def dataset_factory(volume_dir, label_to_index, transforms_train, transforms):
+def dataset_factory(volume_dir, label_to_index, transforms_train, transforms, label_type='model_id'):
     '''
     This function creates a dataset factory that generates train, test, and validation datasets based on the specified viewpoint.
     It returns a function that can be called with a specific viewpoint to generate the datasets.
+    
+    label_type='model_id', 'make_id'
     '''
-    def generate(viewpoint):
-        train_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/train.txt", label_to_index, transforms_train, viewpoint)
-        test_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/test_updated.txt", label_to_index, transforms, viewpoint)
-        valid_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/valid.txt", label_to_index, transforms, viewpoint)
+    def generate(viewpoint, label_type=label_type):
+        train_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/train.txt", label_to_index, transforms_train, viewpoint, label_type=label_type)
+        test_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/test_updated.txt", label_to_index, transforms, viewpoint, label_type=label_type)
+        valid_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/valid.txt", label_to_index, transforms, viewpoint, label_type=label_type)
         return train_dataset, test_dataset, valid_dataset
     return generate
 # Ti chiederai perchè serve questa? Così non devi duplicare il codice ogni volta che devi generare dataset per un diverso viewpoint. 

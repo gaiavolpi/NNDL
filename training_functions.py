@@ -8,6 +8,7 @@ import os
 from torch.nn import Module, Sequential, Conv2d, BatchNorm2d
 from torchvision.transforms import Compose, ToTensor, RandomAffine, RandomHorizontalFlip, RandomVerticalFlip, ColorJitter, Resize
 from sklearn.utils.class_weight import compute_class_weight
+import copy
 
 from ResNet50_blocks import ResNet50
 from utils import ImageDataset
@@ -60,7 +61,9 @@ def load_pretrain(volume_dir, device, model, opt=None, vp=0):
 
     best_val = np.loadtxt(volume_dir+str(vp)+'/best_val.txt')
     train_loss_log_previous = np.loadtxt(volume_dir+str(vp)+'/train_loss_log.txt').tolist()
+    train_loss_log_previous.tolist() if np.ndim(train_loss_log_previous) else [float(train_loss_log_previous)]
     val_loss_log_previous = np.loadtxt(volume_dir+str(vp)+'/val_loss_log.txt').tolist()
+    val_loss_log_previous.tolist() if np.ndim(val_loss_log_previous) else [float(val_loss_log_previous)]
 
     return model, opt, best_val, train_loss_log_previous, val_loss_log_previous
 
@@ -111,7 +114,7 @@ def network_training(train_dataloader, valid_dataloader, load_checkpoint, loss_f
     This function trains the model on the training dataset and evaluates it on the validation dataset.
     '''
     model, opt, best_val, train_loss_log_previous, val_loss_log_previous = load_checkpoint() # load the model and optimizer state if load_checkpoint is True
-    
+
     train_loss_log = []
     val_loss_log = []
     
@@ -157,12 +160,16 @@ def network_training(train_dataloader, valid_dataloader, load_checkpoint, loss_f
         with torch.no_grad():
             predictions = []
             true = []
+            print("Starting validation...")
+            print("valid_dataloader ", valid_dataloader.dataset.__len__())
             for batch_x, batch_y in tqdm(valid_dataloader):
+                print("batch_x, batch_y loaded")
+
                 batch_x = batch_x.to(device)
                 batch_y = batch_y.to(device)
     
                 y_pred = model(batch_x) # forward pass
-
+                print('hey', y_pred)
                 loss = loss_fn(y_pred, batch_y)
                 loss_batch = loss.detach().cpu().numpy()
                 val_loss.append(loss_batch)
@@ -170,7 +177,8 @@ def network_training(train_dataloader, valid_dataloader, load_checkpoint, loss_f
                 # Storing predicted labels and true labels for this batch, to compute the validation accuracy later 
                 predictions.append(y_pred) 
                 true.append(batch_y)
-                
+
+            print('hi', predictions)    
             predictions = torch.cat(predictions, axis=0) # concatenation along batch dimension
             true = torch.cat(true, axis=0) # concatenation along batch dimension
             val_acc = (predictions.argmax(dim=1) == true).float().mean() # picks the class with the highest logit (predicted class) and compares it with the true one 
@@ -182,6 +190,8 @@ def network_training(train_dataloader, valid_dataloader, load_checkpoint, loss_f
     
         if val_loss < best_val:
                 save_checkpoint(model, opt) # save the model and optimizer state
+                #tmp = type(model)().load_state_dict(model.state_dict()) # reset the model to the best state
+                tmp = copy.deepcopy(model)
                 best_val = val_loss
                 best_epoch = epoch 
 
@@ -191,7 +201,7 @@ def network_training(train_dataloader, valid_dataloader, load_checkpoint, loss_f
     save_metric('train_loss_log.txt', train_loss_log_previous)
     save_metric('best_val.txt', [best_val])
 
-    return train_loss_log, val_loss_log
+    return train_loss_log, val_loss_log, tmp
 
 def evaluate_network(dataloader, model, k_indices:list, device):
     '''
@@ -236,13 +246,13 @@ def calcul_class_weights(train_dataloader):
     labels_array = torch.cat(labels_array).numpy().astype(int)
     return compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
 
-def multi_viewpoint_training(viewpoints, epochs, make_dataset, load_checkpoint, loss_fn, device, save_checkpoint, save_metric, model_class, load_pretrain, k_list=[1,5]):
+def multi_viewpoint_training(viewpoints, epochs, make_dataset, load_checkpoint, loss_fn, device, save_checkpoint, save_metric, model_class, load_pretrain, k_list=[1,5], label_type='model_id'):
     '''
     This function performs sequentially a training of a fixed number of epochs on different datasets. The different datasets contains different
     viewpoints of the cars. It saves the model, optimizer and losses for each dataset.'''
     metrics = {}
     for vp in viewpoints:
-        train_dataset, test_dataset, valid_dataset = make_dataset(vp)
+        train_dataset, test_dataset, valid_dataset = make_dataset(vp, label_type=label_type) # generate the datasets for the current viewpoint
         batch_size = 64
         train_dataloader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=os.cpu_count())
         valid_dataloader = DataLoader(valid_dataset, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
@@ -250,7 +260,7 @@ def multi_viewpoint_training(viewpoints, epochs, make_dataset, load_checkpoint, 
         model = model_class() # per rinizializzare il modello ad ogni iterazione altrimenti buuuuu
 
         class_weight = calcul_class_weights(train_dataloader)
-        network_training(
+        *_, model = network_training(
             train_dataloader, 
             valid_dataloader, 
             load_checkpoint, 
@@ -261,65 +271,10 @@ def multi_viewpoint_training(viewpoints, epochs, make_dataset, load_checkpoint, 
             epochs
         )
         
-        model, *_ = load_pretrain(device, model, vp=0)
+        #model, *_ = load_pretrain(device, model, vp=0)
         topk_score = evaluate_network(test_dataloader, model, k_list, device)
         metrics[vp] = topk_score
+        if vp is None: vp=0
+        save_metric('table3/' + label_type+ '_vp' + str(vp)+'.txt', np.array(list(topk_score.values())))
+
     return metrics
-
-'''
-def make_training(epochs_make=30, model=ResNet50(), chosen_viewpoints=None, k_list=[1], volume_dir='/mnt/shared_volume/'):
->>>>>>> 1f380e7 (fixed code, still a bug tough)
-    """
-    This function performs sequentially a training of a fixed number of epochs on different datasets. The different datasets contains different
-    viewpoints of the cars. It saves the trained model for each dataset.
-
-    Possible update: train till convergence
-    Possible update: start from pretrained model
-    viewpoint:
-    -1 - uncertain
-    1 - front
-    2 - rear
-    3 - side
-    4 - front-side
-    5 - rear-side
-
-    Note: here vp=0 stands for all vievpoints
-    """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    vp_to_name = {1 : 'front', 2: 'rear', 3:'side', 4:'front-side', 5:'rear-side', None: 'all-view'}
-    label_to_index_make = indexing_labels(volume_dir + "data/train_test_split/classification/train.txt", label_type='make_id')
-
-    if chosen_viewpoints is None: #here you go sequentially for all viewpoints datasets available
-        viewpoints_considered = [None, 1,2,3,4,5]
-    elif chosen_viewpoints is not None: #here you go sequentially on the specific viewpoints datasets provided as arg 
-        viewpoints_considered = chosen_viewpoints
-    
-    for vp in viewpoints_considered:
-      # LOAD DATASET
-      train_dataset_make =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/train.txt", label_to_index_make, transforms_train, vp, label_type='make_id')
-      test_dataset_make =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/test_updated.txt", label_to_index_make, transforms, vp, label_type='make_id')
-      valid_dataset_make =  ImageDataset(volume_dir +"data", volume_dir + "data/train_test_split/classification/valid.txt", label_to_index_make, transforms, vp, label_type='make_id')
-      print(f"len viewpoint {vp}({vp_to_name[vp]}) dataset:\n \ttrain: {len(train_dataset_make)}, valid: {len(valid_dataset_make)}, test: {len(test_dataset_make)}")
-    # Here we use the Dataloader function from pytorch to opportunely split the dataset in batches and shuffling data
-      batch_size = 64
-      train_dataloader = DataLoader(train_dataset_make, batch_size, shuffle=True, num_workers=os.cpu_count())
-      valid_dataloader = DataLoader(test_dataset_make, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
-      test_dataloader = DataLoader(valid_dataset_make, os.cpu_count()*2, shuffle=False, num_workers=os.cpu_count())
-
-      #class weights
-      labels_array = []
-      for batch in train_dataloader:
-            _, labels = batch
-            labels_array.append(labels)
-      labels_array = torch.cat(labels_array).numpy().astype(int)
-      class_weights = compute_class_weight(class_weight='balanced', classes=np.unique(labels_array), y=labels_array)
-        
-      # TRAIN NETWORK AND SAVE PARAMETERS
-      model, _, _=network_training(class_weights, train_dataloader, valid_dataloader, model, epochs=epochs_make)
-
-      # EVALUATE NETWORK
-      topk_accuracy_test = evaluate_network(test_dataloader, model, k_list, f"Test Dataset viewpoint {vp}({vp_to_name[vp]})") #top-1 accuracy is the accuracy, right? CONTROLLA
-      if vp is None: vp=0 #change for file naming reasons
-      np.savetxt(volume_dir+f'table3/accuracy_vp{vp}_make.txt', np.array(list(topk_accuracy_test.items()))[:,1])  
-      print()
-      '''
