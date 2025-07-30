@@ -7,20 +7,21 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
-
+from functools import lru_cache
+from sklearn.model_selection import train_test_split
 
 def indexing_labels(path_txt_file, label_type='model_id'): 
     '''
     This function reads a text file containing paths to images and extracts labels based on the specified label_type.
     It returns a dictionary mapping original labels to class indices for training.'''
+    
     labels=[]
 
     with open(path_txt_file, 'r') as f:
         for line in f:
-            path = line.strip()
-            parts = os.path.normpath(path).split(os.sep)
-            model_id = parts[-3] #'origina label' is the model id
-            make_id = parts[-4] 
+            parts = line.strip().split(',')
+            model_id = parts[1] #'origina label' is the model id
+            make_id = parts[0] 
             if label_type == 'model_id':
               labels.append(int(model_id))
             elif label_type == 'make_id':
@@ -32,39 +33,6 @@ def indexing_labels(path_txt_file, label_type='model_id'):
     label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
 
     return label_to_index
-
-def split_valid_test(volume_dir):
-    '''
-    This function splits the test set into a new validation set and a new test set,
-    ensuring an even class-wise distribution.
-    '''
-    label_to_paths = defaultdict(list)
-
-    # Read all test paths and group by class
-    with open(volume_dir+'data/train_test_split/classification/test.txt', 'r') as f:
-        for line in f:
-            path = line.strip()
-            parts = os.path.normpath(path).split(os.sep)
-            label = parts[-3]
-            label_to_paths[label].append(path)
-
-    valid_paths, test_paths = [], []
-
-    # For each class, split 50/50
-    for paths in label_to_paths.values():
-        mid = len(paths) // 2
-        valid_paths.extend(paths[:mid])
-        test_paths.extend(paths[mid:])
-
-    # Save valid.txt
-    with open(volume_dir+'data/train_test_split/classification/valid.txt', 'w') as f:
-        for path in valid_paths:
-            f.write(path + '\n')
-
-    # Save test_updated.txt
-    with open(volume_dir+'data/train_test_split/classification/test_updated.txt', 'w') as f:
-        for path in test_paths:
-            f.write(path + '\n')
 
 def check_unbalance_dataset(loader, n_indices=3000, title=''):
     '''
@@ -86,76 +54,76 @@ def check_unbalance_dataset(loader, n_indices=3000, title=''):
     plt.ylabel('counts')
     plt.show()
 
-def dataset_factory(volume_dir, label_to_index, transforms_train, transforms, label_type='model_id'):
+def split_val_test(volume_dir, viewpoint=None, label_type='model_id', part=False):
+    train = pd.read_csv((volume_dir + f'data/train_test_split/part/train_part_{part}.txt') if part else (volume_dir + 'data/train_test_split/classification/train.txt'), header=None)
+    test = pd.read_csv((volume_dir + f'data/train_test_split/part/test_part_{part}.txt') if part else (volume_dir + 'data/train_test_split/classification/test.txt'), header=None)
+
+    if viewpoint is not None:   
+        train = train[train[2] == viewpoint]
+        test = test[test[2] == viewpoint]
+
+        # remove classes with just one samples in test set
+        classes, counts = np.unique(test[1 if label_type == 'model_id' else 0], return_counts=True)
+        classes_to_rem = classes[counts < 2]  
+        for c in classes_to_rem:
+            test = test[test[1 if label_type == 'model_id' else 0] != c]
+            train = train[train[1 if label_type == 'model_id' else 0] != c]
+
+    if part is not None:
+        # remove classes with just one samples in test set
+        classes, counts = np.unique(test[1 if label_type == 'model_id' else 0], return_counts=True)
+        classes_to_rem = classes[counts < 2]  
+        for c in classes_to_rem:
+            test = test[test[1 if label_type == 'model_id' else 0] != c]
+            train = train[train[1 if label_type == 'model_id' else 0] != c]
+
+    # stratified split test into test and validation
+    test, val = train_test_split(test, test_size=0.5, stratify=test[1 if label_type == 'model_id' else 0], random_state=42)
+
+    return train, test, val
+
+def dataset_factory(volume_dir, label_to_index, transforms_train, transforms, paths, labels, part=False):
     '''
     This function creates a dataset factory that generates train, test, and validation datasets based on the specified viewpoint.
     It returns a function that can be called with a specific viewpoint to generate the datasets.
-    
-    label_type='model_id', 'make_id'
     '''
-    def generate(viewpoint, label_type=label_type):
-        train_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/train.txt", label_to_index, transforms_train, viewpoint, label_type=label_type)
-        test_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/test_updated.txt", label_to_index, transforms, viewpoint, label_type=label_type)
-        valid_dataset = ImageDataset(volume_dir + "data", volume_dir + "data/train_test_split/classification/valid.txt", label_to_index, transforms, viewpoint, label_type=label_type)
+
+    def generate():
+        fullpath = os.path.join(volume_dir, "data", "image" if part is False else "part")
+        train_dataset = ImageDataset(fullpath, label_to_index, transforms_train, paths["train"], labels["train"])
+        test_dataset = ImageDataset(fullpath, label_to_index, transforms, paths["test"], labels["test"])
+        valid_dataset = ImageDataset(fullpath, label_to_index, transforms, paths["valid"], labels["valid"])
         return train_dataset, test_dataset, valid_dataset
     return generate
-# Ti chiederai perchè serve questa? Così non devi duplicare il codice ogni volta che devi generare dataset per un diverso viewpoint. 
-# In più, se cambia qualcosa devi solo aggiornare la factory!
+
+@lru_cache(maxsize=None)
+def load_image(path):
+    """
+    Load an image from the given path and convert it to RGB format.
+    This function is cached to avoid reloading the same image multiple times.
+    """
+    image = Image.open(path).convert("RGB")
+    return image
 
 class ImageDataset(Dataset):
 
-    def __init__(self, dataset_folder, path_txt_file, dict_labels, transform=None, viewpoint=None, label_type='model_id'):
+    def __init__(self, base_path, dict_labels, transform, paths, labels):
         '''
         label_type='model_id', 'make_id'
         '''
         self.transform = transform
-        self.image_paths = []
-        self.labels = []
         self.dict_labels=dict_labels
 
-
-        # load the paths to the images you need
-        with open(path_txt_file, 'r') as f:
-            for line in f:
-                relative_path = line.strip() # get the paths of the images used in the paper
-
-                if viewpoint: # if we want to train/test on a single viewpoint
-                  label_path = os.path.join(dataset_folder, 'label', relative_path.replace('.jpg', '.txt'))
-                  with open(label_path, 'r') as f:
-                    lines = f.readlines()
-                    vp = int(lines[0].strip())
-
-                  if vp == viewpoint: # use only the images with the desired viewpoint
-                    image_path = os.path.join(dataset_folder, 'image', relative_path)
-                    self.image_paths.append(image_path)
-
-                else: #load all viewpoints
-                  image_path = os.path.join(dataset_folder, 'image', relative_path)
-                  self.image_paths.append(image_path)
-
-        # Extract label model_id from path
-        for path in self.image_paths:
-            parts = os.path.normpath(path).split(os.sep)
-            model_id = parts[-3]
-            make_id = parts[-4]
-            if label_type == 'model_id':
-              self.labels.append(model_id)
-            elif  label_type == 'make_id':
-              self.labels.append(make_id)
-            else:
-              raise Exception('error with label_type argument')
-            '''
-            # run this if you instead want the set of three labels (make_id, model_id, year)
-            year = parts[-2]
-            self.labels.append((make_id, model_id, year))
-            '''
+        self.base_path = base_path
+        self.paths = paths
+        self.labels = labels
             
     def __len__(self):
-        return len(self.image_paths)
+        return len(self.paths)
 
     def __getitem__(self, idx):
-        img_path = self.image_paths[idx]
-        image = Image.open(img_path).convert("RGB")
+        img_path = self.paths[idx]
+        image = load_image(os.path.join(self.base_path, img_path))  # Load the image using the cached function
         label = self.dict_labels[int(self.labels[idx])] #labelling the image, converting the original label to index through the dictionary
         if self.transform:
             image = self.transform(image)
