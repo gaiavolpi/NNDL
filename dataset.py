@@ -47,11 +47,12 @@ def check_unbalance_dataset(loader, n_indices=3000, title=''):
     labels_array = torch.cat(labels_array).numpy().astype(int)  # or .tolist() if you want a Python list
     labels_array_sorted = np.sort(labels_array)
     
-    plt.hist(labels_array_sorted[:n_indices], bins=np.arange(min(labels_array_sorted[:n_indices]),max(labels_array_sorted[:n_indices])), edgecolor='black')
+    plt.hist(labels_array_sorted[:n_indices], bins=np.arange(min(labels_array_sorted[:n_indices]),max(labels_array_sorted[:n_indices])), edgecolor='white', linewidth=1, color='navy', alpha=0.7)
     plt.xticks(np.arange(min(labels_array_sorted[:n_indices]), max(labels_array_sorted[:n_indices]),step=10))
     plt.title(title)
-    plt.xlabel('classes')
-    plt.ylabel('counts')
+    plt.xlabel('Model id')
+    plt.ylabel('Counts')
+    plt.savefig('hist.svg', bbox_inches='tight', dpi=300)
     plt.show()
 
 def split_val_test(volume_dir, viewpoint=None, label_type='model_id', part=False):
