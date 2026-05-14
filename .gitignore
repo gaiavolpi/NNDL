@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+
+.ipynb_checkpoints/
+
+CompCars/
+images/
+*.jpg
+*.png
+*.zip
+
+.DS_Store
