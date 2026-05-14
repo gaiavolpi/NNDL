@@ -16,6 +16,7 @@ To reproduce the results, manually download the original dataset:
 1. Download the **CompCars** from [MMLAB - CompCars](https://mmlab.ie.cuhk.edu.hk/datasets/comp_cars/).
 2. Extract the dataset in a repository called `CompCars` in the root of this project. 
 
+```text
 .
 ├── CompCars/
 │   ├── data/
@@ -23,4 +24,5 @@ To reproduce the results, manually download the original dataset:
 │   │   └── label/
 │   └── train_test_split/
 ├── dataset.py
+├── training_functions.py
 └── ...
